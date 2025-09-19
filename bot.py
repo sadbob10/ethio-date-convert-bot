@@ -3,7 +3,7 @@ import os
 import re
 import datetime
 import threading
-from flask import Flask
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -21,13 +21,6 @@ from hijridate import Hijri, Gregorian
 
 # ---------------- FLASK APP FOR RENDER ----------------
 app = Flask(__name__)
-
-@app.route("/")
-def health_check():
-    return "Bot is running", 200
-
-def run_flask():
-    app.run(host="0.0.0.0", port=10000, debug=False, use_reloader=False)
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(
@@ -79,10 +72,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         today = datetime.date.today()
         greg_str = format_gregorian_date(today)
 
-        # ✅ FIXED: Ethiopian date conversion (tuple unpacking)
-        eth_year, eth_month, eth_day = EthiopianDateConverter.to_ethiopian(
-            today.year, today.month, today.day
-        )
+        # Handle both tuple and date object return types
+        eth_result = EthiopianDateConverter.to_ethiopian(today.year, today.month, today.day)
+        if hasattr(eth_result, "year"):  # It's a datetime.date
+            eth_year, eth_month, eth_day = eth_result.year, eth_result.month, eth_result.day
+        else:  # It's a tuple
+            eth_year, eth_month, eth_day = eth_result
         eth_str = format_ethiopian_date(eth_year, eth_month, eth_day)
 
         hijri_date = Gregorian(today.year, today.month, today.day).to_hijri()
@@ -203,12 +198,17 @@ async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ---------------- Date Conversion ----------------
         if awaiting == "convert":
             if mode == "greg":
-                # ✅ FIXED: Ethiopian date conversion
-                ey, em, ed = EthiopianDateConverter.to_ethiopian(y, m, d)
+                eth_result = EthiopianDateConverter.to_ethiopian(y, m, d)
+                if hasattr(eth_result, "year"):
+                    ey, em, ed = eth_result.year, eth_result.month, eth_result.day
+                else:
+                    ey, em, ed = eth_result
                 eth_str = format_ethiopian_date(ey, em, ed)
+
                 hijri_date = Gregorian(y, m, d).to_hijri()
                 hy, hm, hd = hijri_date.year, hijri_date.month, hijri_date.day
                 hijri_str = format_hijri_date(hy, hm, hd)
+
                 result = (
                     f"📅 {y}-{m:02d}-{d:02d} (Gregorian)\n\n"
                     f"→ {ey}-{em:02d}-{ed:02d} (Ethiopian)\n   {eth_str}\n\n"
@@ -217,11 +217,15 @@ async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             elif mode == "eth":
                 g_date = EthiopianDateConverter.to_gregorian(y, m, d)
-                gy, gm, gd = g_date.year, g_date.month, g_date.day
-                greg_str = format_gregorian_date(g_date)
+                if hasattr(g_date, "year"):
+                    gy, gm, gd = g_date.year, g_date.month, g_date.day
+                else:
+                    gy, gm, gd = g_date
+                greg_str = format_gregorian_date(datetime.date(gy, gm, gd))
                 hijri_date = Gregorian(gy, gm, gd).to_hijri()
                 hy, hm, hd = hijri_date.year, hijri_date.month, hijri_date.day
                 hijri_str = format_hijri_date(hy, hm, hd)
+
                 result = (
                     f"📅 {y}-{m:02d}-{d:02d} (Ethiopian)\n\n"
                     f"→ {gy}-{gm:02d}-{gd:02d} (Gregorian)\n   {greg_str}\n\n"
@@ -231,10 +235,13 @@ async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif mode == "hijri":
                 g_date = Hijri(y, m, d).to_gregorian()
                 gy, gm, gd = g_date.year, g_date.month, g_date.day
-                greg_str = format_gregorian_date(g_date)
+                greg_str = format_gregorian_date(datetime.date(gy, gm, gd))
 
-                # ✅ FIXED: Ethiopian date conversion
-                ey, em, ed = EthiopianDateConverter.to_ethiopian(gy, gm, gd)
+                eth_result = EthiopianDateConverter.to_ethiopian(gy, gm, gd)
+                if hasattr(eth_result, "year"):
+                    ey, em, ed = eth_result.year, eth_result.month, eth_result.day
+                else:
+                    ey, em, ed = eth_result
                 eth_str = format_ethiopian_date(ey, em, ed)
 
                 result = (
@@ -367,24 +374,61 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=GLOBAL_KEYBOARD,
         )
 
+# ---------------- Flask Routes for Webhook ----------------
+@app.route("/")
+def health_check():
+    return "Bot is running", 200
+
+@app.route("/health")
+def health():
+    return jsonify(status="ok", bot="running")
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    """Handle incoming webhook updates from Telegram."""
+    if request.headers.get("content-type") == "application/json":
+        json_str = request.get_data().decode("UTF-8")
+        update = Update.de_json(json_str, application.bot)
+        application.process_update(update)
+        return jsonify(success=True)
+    return jsonify(success=False), 400
+
 # ---------------- Main ----------------
 def main():
-    # Start Flask in a separate thread for Render health checks
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
+    global application
 
-    # Start the Telegram bot
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_error_handler(error_handler)
-    logger.info("Bot started successfully.")
-    app.run_polling()
+    # Initialize the Telegram bot application
+    application = Application.builder().token(TOKEN).build()
+
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("menu", menu))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("cancel", cancel))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_error_handler(error_handler)
+
+    # Check if running on Render (production)
+    if os.getenv("RENDER"):
+        logger.info("Starting in webhook mode (Production)")
+
+        # Set webhook URL
+        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+
+        # Initialize webhook - this runs in the background
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=10000,
+            webhook_url=webhook_url,
+            secret_token=os.getenv("WEBHOOK_SECRET", "default-secret-token"),
+        )
+
+    else:
+        # Local development mode - use polling
+        logger.info("Starting in polling mode (Local Development)")
+        application.run_polling()
+
 
 if __name__ == "__main__":
     main()
