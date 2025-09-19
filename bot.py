@@ -2,8 +2,6 @@ import logging
 import os
 import re
 import datetime
-import threading
-from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -18,9 +16,18 @@ from date_conversion import (
 )
 from text_utils import escape_markdown, sanitize_message
 from hijridate import Hijri, Gregorian
+from flask import Flask, jsonify
 
-# ---------------- FLASK APP FOR RENDER ----------------
+# ---------------- FLASK APP FOR HEALTH CHECK ----------------
 app = Flask(__name__)
+
+@app.route("/")
+def health_check():
+    return "Bot is running", 200
+
+@app.route("/health")
+def health():
+    return jsonify(status="ok", bot="running")
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(
@@ -39,9 +46,7 @@ if ADMIN_CHAT_ID:
     try:
         ADMIN_CHAT_ID = int(ADMIN_CHAT_ID)
     except ValueError:
-        logger.warning(
-            "ADMIN_CHAT_ID is not a valid integer. Messages won't be forwarded."
-        )
+        logger.warning("ADMIN_CHAT_ID is not a valid integer. Messages won't be forwarded.")
         ADMIN_CHAT_ID = None
 
 # ---------------- KEYBOARD ----------------
@@ -72,11 +77,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         today = datetime.date.today()
         greg_str = format_gregorian_date(today)
 
-        # Handle both tuple and date object return types
         eth_result = EthiopianDateConverter.to_ethiopian(today.year, today.month, today.day)
-        if hasattr(eth_result, "year"):  # It's a datetime.date
+        if hasattr(eth_result, "year"):
             eth_year, eth_month, eth_day = eth_result.year, eth_result.month, eth_result.day
-        else:  # It's a tuple
+        else:
             eth_year, eth_month, eth_day = eth_result
         eth_str = format_ethiopian_date(eth_year, eth_month, eth_day)
 
@@ -121,9 +125,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Ethiopian 🇪🇹
 • Hijri 🌙
 """
-    await update.message.reply_text(
-        menu_text, parse_mode="Markdown", reply_markup=GLOBAL_KEYBOARD
-    )
+    await update.message.reply_text(menu_text, parse_mode="Markdown", reply_markup=GLOBAL_KEYBOARD)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
@@ -143,30 +145,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *To cancel any operation:*
 - Type /cancel or click Cancel
 """
-    await update.message.reply_text(
-        help_text, parse_mode="Markdown", reply_markup=GLOBAL_KEYBOARD
-    )
+    await update.message.reply_text(help_text, parse_mode="Markdown", reply_markup=GLOBAL_KEYBOARD)
 
 # ---------------- Cancel ----------------
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("awaiting_date"):
         context.user_data["awaiting_date"] = None
         context.user_data["input_mode"] = None
-        await update.message.reply_text(
-            "❌ Operation cancelled.", reply_markup=GLOBAL_KEYBOARD
-        )
+        await update.message.reply_text("❌ Operation cancelled.", reply_markup=GLOBAL_KEYBOARD)
     else:
-        await update.message.reply_text(
-            "No operation to cancel.", reply_markup=GLOBAL_KEYBOARD
-        )
+        await update.message.reply_text("No operation to cancel.", reply_markup=GLOBAL_KEYBOARD)
 
 # ---------------- Process Date ----------------
 async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", text):
-        await update.message.reply_text(
-            "⚠️ Please use YYYY-MM-DD format (e.g., 2023-12-25)."
-        )
+        await update.message.reply_text("⚠️ Please use YYYY-MM-DD format (e.g., 2023-12-25).")
         return
 
     mode = context.user_data.get("input_mode")
@@ -177,7 +171,6 @@ async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         y, m, d = map(int, text.split("-"))
 
-        # ---------------- Age Validation ----------------
         if awaiting == "age":
             valid, error_msg = validate_birth_date(mode, y, m, d)
             if not valid:
@@ -195,42 +188,27 @@ async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["input_mode"] = None
             return
 
-        # ---------------- Date Conversion ----------------
         if awaiting == "convert":
             if mode == "greg":
                 eth_result = EthiopianDateConverter.to_ethiopian(y, m, d)
-                if hasattr(eth_result, "year"):
-                    ey, em, ed = eth_result.year, eth_result.month, eth_result.day
-                else:
-                    ey, em, ed = eth_result
+                ey, em, ed = (eth_result.year, eth_result.month, eth_result.day) if hasattr(eth_result, "year") else eth_result
                 eth_str = format_ethiopian_date(ey, em, ed)
 
                 hijri_date = Gregorian(y, m, d).to_hijri()
                 hy, hm, hd = hijri_date.year, hijri_date.month, hijri_date.day
                 hijri_str = format_hijri_date(hy, hm, hd)
 
-                result = (
-                    f"📅 {y}-{m:02d}-{d:02d} (Gregorian)\n\n"
-                    f"→ {ey}-{em:02d}-{ed:02d} (Ethiopian)\n   {eth_str}\n\n"
-                    f"→ {hy}-{hm:02d}-{hd:02d} (Hijri)\n   {hijri_str}"
-                )
+                result = f"📅 {y}-{m:02d}-{d:02d} (Gregorian)\n\n→ {ey}-{em:02d}-{ed:02d} (Ethiopian)\n   {eth_str}\n\n→ {hy}-{hm:02d}-{hd:02d} (Hijri)\n   {hijri_str}"
 
             elif mode == "eth":
                 g_date = EthiopianDateConverter.to_gregorian(y, m, d)
-                if hasattr(g_date, "year"):
-                    gy, gm, gd = g_date.year, g_date.month, g_date.day
-                else:
-                    gy, gm, gd = g_date
+                gy, gm, gd = (g_date.year, g_date.month, g_date.day) if hasattr(g_date, "year") else g_date
                 greg_str = format_gregorian_date(datetime.date(gy, gm, gd))
                 hijri_date = Gregorian(gy, gm, gd).to_hijri()
                 hy, hm, hd = hijri_date.year, hijri_date.month, hijri_date.day
                 hijri_str = format_hijri_date(hy, hm, hd)
 
-                result = (
-                    f"📅 {y}-{m:02d}-{d:02d} (Ethiopian)\n\n"
-                    f"→ {gy}-{gm:02d}-{gd:02d} (Gregorian)\n   {greg_str}\n\n"
-                    f"→ {hy}-{hm:02d}-{hd:02d} (Hijri)\n   {hijri_str}"
-                )
+                result = f"📅 {y}-{m:02d}-{d:02d} (Ethiopian)\n\n→ {gy}-{gm:02d}-{gd:02d} (Gregorian)\n   {greg_str}\n\n→ {hy}-{hm:02d}-{hd:02d} (Hijri)\n   {hijri_str}"
 
             elif mode == "hijri":
                 g_date = Hijri(y, m, d).to_gregorian()
@@ -238,17 +216,10 @@ async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 greg_str = format_gregorian_date(datetime.date(gy, gm, gd))
 
                 eth_result = EthiopianDateConverter.to_ethiopian(gy, gm, gd)
-                if hasattr(eth_result, "year"):
-                    ey, em, ed = eth_result.year, eth_result.month, eth_result.day
-                else:
-                    ey, em, ed = eth_result
+                ey, em, ed = (eth_result.year, eth_result.month, eth_result.day) if hasattr(eth_result, "year") else eth_result
                 eth_str = format_ethiopian_date(ey, em, ed)
 
-                result = (
-                    f"📅 {y}-{m:02d}-{d:02d} (Hijri)\n\n"
-                    f"→ {gy}-{gm:02d}-{gd:02d} (Gregorian)\n   {greg_str}\n\n"
-                    f"→ {ey}-{em:02d}-{ed:02d} (Ethiopian)\n   {eth_str}"
-                )
+                result = f"📅 {y}-{m:02d}-{d:02d} (Hijri)\n\n→ {gy}-{gm:02d}-{gd:02d} (Gregorian)\n   {greg_str}\n\n→ {ey}-{em:02d}-{ed:02d} (Ethiopian)\n   {eth_str}"
 
             await update.message.reply_text(result)
             context.user_data["awaiting_date"] = None
@@ -269,45 +240,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in ["convert date", "convert"]:
         context.user_data["awaiting_date"] = "convert"
         keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("Gregorian", callback_data="input-greg"),
-                    InlineKeyboardButton("Ethiopian", callback_data="input-eth"),
-                    InlineKeyboardButton("Hijri", callback_data="input-hijri"),
-                ]
-            ]
+            [[
+                InlineKeyboardButton("Gregorian", callback_data="input-greg"),
+                InlineKeyboardButton("Ethiopian", callback_data="input-eth"),
+                InlineKeyboardButton("Hijri", callback_data="input-hijri"),
+            ]]
         )
-        await update.message.reply_text(
-            "Select input calendar type:", reply_markup=keyboard
-        )
+        await update.message.reply_text("Select input calendar type:", reply_markup=keyboard)
         return
 
     if text in ["calculate age", "age"]:
         context.user_data["awaiting_date"] = "age"
         keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("Gregorian", callback_data="input-greg"),
-                    InlineKeyboardButton("Ethiopian", callback_data="input-eth"),
-                    InlineKeyboardButton("Hijri", callback_data="input-hijri"),
-                ]
-            ]
+            [[
+                InlineKeyboardButton("Gregorian", callback_data="input-greg"),
+                InlineKeyboardButton("Ethiopian", callback_data="input-eth"),
+                InlineKeyboardButton("Hijri", callback_data="input-hijri"),
+            ]]
         )
-        await update.message.reply_text(
-            "Select your birthdate calendar type:", reply_markup=keyboard
-        )
+        await update.message.reply_text("Select your birthdate calendar type:", reply_markup=keyboard)
         return
 
     if text in ["write a message", "message"]:
         if not ADMIN_CHAT_ID:
-            await update.message.reply_text(
-                "⚠️ Admin chat is not configured. Cannot send messages."
-            )
+            await update.message.reply_text("⚠️ Admin chat is not configured. Cannot send messages.")
             return
         context.user_data["awaiting_date"] = "message"
-        await update.message.reply_text(
-            "✏️ Please type your message and it will be sent to the admin.\nType /cancel to cancel."
-        )
+        await update.message.reply_text("✏️ Please type your message and it will be sent to the admin.\nType /cancel to cancel.")
         return
 
     if context.user_data.get("awaiting_date") == "message":
@@ -317,16 +276,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=ADMIN_CHAT_ID,
                 text=f"📨 Message from {update.effective_user.full_name} (@{update.effective_user.username or 'N/A'}):\n\n{sanitized_msg}",
             )
-            await update.message.reply_text(
-                "✅ Your message has been sent to the admin. Thank you!"
-            )
+            await update.message.reply_text("✅ Your message has been sent to the admin. Thank you!")
         except Exception as e:
-            logger.exception(
-                f"Error forwarding message from user {update.effective_user.id}"
-            )
-            await update.message.reply_text(
-                f"⚠️ Failed to send your message: {str(e)}"
-            )
+            logger.exception(f"Error forwarding message from user {update.effective_user.id}")
+            await update.message.reply_text(f"⚠️ Failed to send your message: {str(e)}")
         finally:
             context.user_data["awaiting_date"] = None
         return
@@ -343,9 +296,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await help_command(update, context)
         return
 
-    await update.message.reply_text(
-        "⚠️ Command not recognized. Use /help.", reply_markup=GLOBAL_KEYBOARD
-    )
+    await update.message.reply_text("⚠️ Command not recognized. Use /help.", reply_markup=GLOBAL_KEYBOARD)
 
 # ---------------- Callback Handler ----------------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -354,9 +305,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     context.user_data["input_mode"] = data.split("-")[1]
 
-    full_name = calendar_names.get(
-        context.user_data["input_mode"], context.user_data["input_mode"]
-    )
+    full_name = calendar_names.get(context.user_data["input_mode"], context.user_data["input_mode"])
 
     await query.edit_message_text(
         f"✅ Input mode set to *{full_name}*.\nSend a date in YYYY-MM-DD format.\nType /cancel to cancel.",
@@ -365,42 +314,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- Error Handler ----------------
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(
-        f"Exception while handling an update: {context.error}", exc_info=context.error
-    )
+    logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
     if update and update.effective_message:
-        await update.effective_message.reply_text(
-            "❌ An unexpected error occurred. Please try again later.",
-            reply_markup=GLOBAL_KEYBOARD,
-        )
-
-# ---------------- Flask Routes for Webhook ----------------
-@app.route("/")
-def health_check():
-    return "Bot is running", 200
-
-@app.route("/health")
-def health():
-    return jsonify(status="ok", bot="running")
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    """Handle incoming webhook updates from Telegram."""
-    if request.headers.get("content-type") == "application/json":
-        json_str = request.get_data().decode("UTF-8")
-        update = Update.de_json(json_str, application.bot)
-        application.process_update(update)
-        return jsonify(success=True)
-    return jsonify(success=False), 400
+        await update.effective_message.reply_text("❌ An unexpected error occurred. Please try again later.", reply_markup=GLOBAL_KEYBOARD)
 
 # ---------------- Main ----------------
 def main():
-    global application
-
-    # Initialize the Telegram bot application
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     application = Application.builder().token(TOKEN).build()
 
-    # Add handlers
+    # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu))
     application.add_handler(CommandHandler("help", help_command))
@@ -409,21 +332,18 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_error_handler(error_handler)
 
-    # Check if running on Render (production)
+    # Render Webhook
     if os.getenv("RENDER"):
-        logger.info("Starting in webhook mode (Production)")
-
-        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/"
+        logger.info("Starting bot in webhook mode (Production)")
         application.run_webhook(
             listen="0.0.0.0",
             port=int(os.environ.get("PORT", 10000)),
-            webhook_url=webhook_url,
-            secret_token=os.getenv("WEBHOOK_SECRET", "default-secret-token"),
+            webhook_url=webhook_url
         )
     else:
-        logger.info("Starting in polling mode (Local Development)")
+        logger.info("Starting bot in polling mode (Local)")
         application.run_polling()
-
 
 if __name__ == "__main__":
     main()
