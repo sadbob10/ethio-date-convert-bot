@@ -410,24 +410,18 @@ def main():
     application.add_error_handler(error_handler)
 
     # Check if running on Render (production)
-    if os.getenv("RENDER"):
-        logger.info("Starting in webhook mode (Production)")
-
-        # Set webhook URL
-        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
-
-        # Initialize webhook - this runs in the background
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=10000,
-            webhook_url=webhook_url,
-            secret_token=os.getenv("WEBHOOK_SECRET", "default-secret-token"),
-        )
-
-    else:
-        # Local development mode - use polling
-        logger.info("Starting in polling mode (Local Development)")
-        application.run_polling()
+if os.getenv("RENDER"):
+    # Production: webhook mode
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        webhook_url=webhook_url,
+        secret_token=os.getenv("WEBHOOK_SECRET", "default-secret-token"),
+    )
+else:
+    # Local: polling mode
+    application.run_polling()
 
 
 if __name__ == "__main__":
