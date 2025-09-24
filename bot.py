@@ -158,7 +158,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- Cancel ----------------
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("awaiting_date"):
+    if context.user_data.get("awaiting_date") in ["convert", "age", "message", "admin_reply"]:
         context.user_data["awaiting_date"] = None
         context.user_data["input_mode"] = None
         context.user_data["reply_to_user"] = None
@@ -245,6 +245,37 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text.lower() in ["cancel", "/cancel"]:
         await cancel(update, context)
+        return
+
+    # Handle admin replies
+    if context.user_data.get("awaiting_date") == "admin_reply":
+        if update.effective_user.id != ADMIN_CHAT_ID:
+            await update.message.reply_text("⚠️ Only admin can use this feature.")
+            return
+            
+        user_id = context.user_data.get("reply_to_user")
+        if not user_id:
+            await update.message.reply_text("⚠️ No user to reply to.")
+            context.user_data["awaiting_date"] = None
+            context.user_data["reply_to_user"] = None
+            return
+            
+        try:
+            # Send message to the original user
+            sanitized_reply = sanitize_message(text)
+            admin_name = update.effective_user.full_name
+            reply_text = f"📩 Reply from admin ({admin_name}):\n\n{sanitized_reply}"
+            
+            await context.bot.send_message(chat_id=user_id, text=reply_text)
+            await update.message.reply_text("✅ Your reply has been sent to the user.")
+            
+        except Exception as e:
+            logger.exception(f"Error sending admin reply to user {user_id}")
+            await update.message.reply_text(f"⚠️ Failed to send reply: {str(e)}")
+        finally:
+            # Clear the state
+            context.user_data["awaiting_date"] = None
+            context.user_data["reply_to_user"] = None
         return
 
     if text.lower() in ["convert date", "convert"]:
