@@ -167,47 +167,37 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No operation to cancel.", reply_markup=GLOBAL_KEYBOARD)
 
 # ---------------- Process Date ----------------
-async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE, override_text: str = None):
-    # Use text from message or override_text
-    text = override_text or (update.message.text if update.message else None)
-    if not text and update.callback_query:
-        text = context.user_data.get("pending_date")
-    if not text:
+async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+        await update.message.reply_text("⚠️ Please use YYYY-MM-DD format (e.g., 2023-12-25).")
+        return
+
+    mode = context.user_data.get("input_mode")
+    awaiting = context.user_data.get("awaiting_date")
+    if not mode or awaiting not in ["convert", "age"]:
         return
 
     try:
         y, m, d = map(int, text.split("-"))
 
-        awaiting = context.user_data.get("awaiting_date")
-        mode = context.user_data.get("input_mode")
-        if not mode or awaiting not in ["convert", "age"]:
-            return
-
-        reply_target = update.message or (update.callback_query.message if update.callback_query else None)
-        if not reply_target:
-            return
-
-        # --- Age calculation ---
         if awaiting == "age":
             valid, error_msg = validate_birth_date(mode, y, m, d)
             if not valid:
-                await reply_target.reply_text(f"⚠️ {error_msg}")
+                await update.message.reply_text(f"⚠️ {error_msg}")
                 return
 
             birth_date = parse_birth_date(mode, y, m, d)
             age = calculate_age(birth_date)
-
-            await reply_target.reply_text(
+            await update.message.reply_text(
                 f"🎂 You are *{age}* years old.",
                 parse_mode="Markdown",
-                reply_markup=GLOBAL_KEYBOARD
+                reply_markup=GLOBAL_KEYBOARD,
             )
-
             context.user_data["awaiting_date"] = None
             context.user_data["input_mode"] = None
             return
 
-        # --- Date conversion ---
         if awaiting == "convert":
             if mode == "greg":
                 eth_result = EthiopianDateConverter.to_ethiopian(y, m, d)
@@ -241,46 +231,87 @@ async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE, overr
 
                 result = f"📅 {y}-{m:02d}-{d:02d} (Hijri)\n\n→ {gy}-{gm:02d}-{gd:02d} (Gregorian)\n   {greg_str}\n\n→ {ey}-{em:02d}-{ed:02d} (Ethiopian)\n   {eth_str}"
 
-            await reply_target.reply_text(result)
+            await update.message.reply_text(result)
             context.user_data["awaiting_date"] = None
             context.user_data["input_mode"] = None
 
     except Exception as e:
-        reply_target = update.message or (update.callback_query.message if update.callback_query else None)
-        if reply_target:
-            await reply_target.reply_text(f"⚠️ Error processing date: {str(e)}")
         logger.exception(f"Error processing date for user {update.effective_user.id}")
+        await update.message.reply_text(f"⚠️ Error processing date: {str(e)}")
 
 # ---------------- Text Handler ----------------
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    # Cancel
     if text.lower() in ["cancel", "/cancel"]:
         await cancel(update, context)
         return
 
-    # Direct date detection
-    if not context.user_data.get("awaiting_date"):
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", text):
-            context.user_data["awaiting_date"] = "direct_convert"
-            context.user_data["pending_date"] = text
-            keyboard = InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton("Gregorian", callback_data="direct-greg"),
-                    InlineKeyboardButton("Ethiopian", callback_data="direct-eth"),
-                    InlineKeyboardButton("Hijri", callback_data="direct-hijri"),
-                ]]
-            )
-            await update.message.reply_text(
-                "📅 You sent a date!\nSelect which calendar this date belongs to:",
-                reply_markup=keyboard
-            )
-            return
+    if text.lower() in ["convert date", "convert"]:
+        context.user_data["awaiting_date"] = "convert"
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("Gregorian", callback_data="input-greg"),
+                InlineKeyboardButton("Ethiopian", callback_data="input-eth"),
+                InlineKeyboardButton("Hijri", callback_data="input-hijri"),
+            ]]
+        )
+        await update.message.reply_text("Select input calendar type:", reply_markup=keyboard)
+        return
 
-    # Remaining handle_text logic remains exactly the same...
-    # (Convert Date, Calculate Age, Write Message, etc.)
-    # ... No other functionality changed
+    if text.lower() in ["calculate age", "age"]:
+        context.user_data["awaiting_date"] = "age"
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("Gregorian", callback_data="input-greg"),
+                InlineKeyboardButton("Ethiopian", callback_data="input-eth"),
+                InlineKeyboardButton("Hijri", callback_data="input-hijri"),
+            ]]
+        )
+        await update.message.reply_text("Select your birthdate calendar type:", reply_markup=keyboard)
+        return
+
+    if text.lower() in ["write a message", "message"]:
+        if not ADMIN_CHAT_ID:
+            await update.message.reply_text("⚠️ Admin chat is not configured. Cannot send messages.")
+            return
+        context.user_data["awaiting_date"] = "message"
+        await update.message.reply_text("✏️ Please type your message and it will be sent to the admin.\nType /cancel to cancel.")
+        return
+
+    # Forward message to admin with reply button
+    if context.user_data.get("awaiting_date") == "message":
+        try:
+            sanitized_msg = sanitize_message(text)
+            user_id = update.effective_user.id
+            full_name = update.effective_user.full_name
+            username = update.effective_user.username or "N/A"
+            pending_messages[user_id] = (full_name, username)
+
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("Reply to User", callback_data=f"reply-{user_id}")]])
+            reply_text = f"📨 Message from {full_name} (@{username}):\n\n{sanitized_msg}"
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=reply_text, reply_markup=reply_markup)
+            await update.message.reply_text("✅ Your message has been sent to the admin. They can reply directly using the button.")
+        except Exception as e:
+            logger.exception(f"Error forwarding message from user {update.effective_user.id}")
+            await update.message.reply_text(f"⚠️ Failed to send your message: {str(e)}")
+        finally:
+            context.user_data["awaiting_date"] = None
+        return
+
+    if context.user_data.get("awaiting_date"):
+        await process_date(update, context)
+        return
+
+    if text.lower() in ["menu", "/menu"]:
+        await menu(update, context)
+        return
+
+    if text.lower() in ["help", "/help"]:
+        await help_command(update, context)
+        return
+
+    await update.message.reply_text("⚠️ Command not recognized. Use /help.", reply_markup=GLOBAL_KEYBOARD)
 
 # ---------------- Callback Handler ----------------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -295,30 +326,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Input mode set to *{full_name}*.\nSend a date in YYYY-MM-DD format.\nType /cancel to cancel.",
             parse_mode="Markdown",
         )
-
-    elif data.startswith("direct-"):
-        mode = data.split("-")[1]
-        context.user_data["input_mode"] = mode
-        date_str = context.user_data.get("pending_date")
-        if not date_str:
-            await query.edit_message_text("⚠️ No date found to process.")
-            return
-
-        # Call process_date with override_text
-        await process_date(update, context, override_text=date_str)
-        # Cleanup
-        context.user_data["awaiting_date"] = None
-        context.user_data["input_mode"] = None
-        context.user_data["pending_date"] = None
-
     elif data.startswith("reply-"):
         user_id = int(data.split("-")[1])
         context.user_data["awaiting_date"] = "admin_reply"
         context.user_data["reply_to_user"] = user_id
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"✏️ Please type your reply to the user now (User ID: {user_id})."
-        )
+        await query.edit_message_text("✏️ Please type your reply to the user now.")
 
 # ---------------- Error Handler ----------------
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
