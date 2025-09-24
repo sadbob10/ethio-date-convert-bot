@@ -261,17 +261,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         try:
+            # Get user info from pending_messages
+            user_info = pending_messages.get(user_id, ("Unknown User", "N/A"))
+            full_name, username = user_info
+            
             # Send message to the original user
             sanitized_reply = sanitize_message(text)
             admin_name = update.effective_user.full_name
             reply_text = f"📩 Reply from admin ({admin_name}):\n\n{sanitized_reply}"
             
             await context.bot.send_message(chat_id=user_id, text=reply_text)
-            await update.message.reply_text("✅ Your reply has been sent to the user.")
+            
+            # Send confirmation to admin with user info
+            await update.message.reply_text(
+                f"✅ Reply sent to user successfully!\n\n"
+                f"**User:** {full_name} (@{username})\n"
+                f"**Your message:** {sanitized_reply}"
+            )
             
         except Exception as e:
             logger.exception(f"Error sending admin reply to user {user_id}")
-            await update.message.reply_text(f"⚠️ Failed to send reply: {str(e)}")
+            error_msg = str(e)
+            if "bot was blocked" in error_msg.lower() or "chat not found" in error_msg.lower():
+                await update.message.reply_text("❌ Failed to send reply: User has blocked the bot or chat not found.")
+            else:
+                await update.message.reply_text(f"⚠️ Failed to send reply: {error_msg}")
         finally:
             # Clear the state
             context.user_data["awaiting_date"] = None
@@ -361,7 +375,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = int(data.split("-")[1])
         context.user_data["awaiting_date"] = "admin_reply"
         context.user_data["reply_to_user"] = user_id
-        await query.edit_message_text("✏️ Please type your reply to the user now.")
+        
+        # Get user info from pending_messages or the original message
+        user_info = pending_messages.get(user_id, ("Unknown User", "N/A"))
+        full_name, username = user_info
+        
+        # Update the original message to show it's being handled
+        original_text = query.message.text
+        await query.edit_message_text(
+            f"{original_text}\n\n✅ **Reply initiated to {full_name}**",
+            parse_mode="Markdown",
+            reply_markup=None  # Remove the button after clicking
+        )
+        
+        # Send instructions in a new message
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"✏️ Now replying to {full_name} (@{username})\n\nPlease type your message below:\nType /cancel to cancel."
+        )
 
 # ---------------- Error Handler ----------------
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
