@@ -335,17 +335,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("Reply to User", callback_data=f"reply-{user_id}")]])
             
-            # Escape Markdown characters in the message
-            escaped_full_name = escape_markdown(full_name)
-            escaped_username = escape_markdown(username)
-            escaped_message = escape_markdown(sanitized_msg)
-            
-            reply_text = f"📨 Message from {escaped_full_name} (@{escaped_username}):\n\n{escaped_message}"
+            # Use plain text instead of Markdown to avoid parsing issues
+            reply_text = f"📨 Message from {full_name} (@{username}):\n\n{sanitized_msg}"
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID, 
                 text=reply_text, 
-                reply_markup=reply_markup,
-                parse_mode="MarkdownV2"
+                reply_markup=reply_markup
+                # parse_mode removed to use plain text
             )
             await update.message.reply_text("✅ Your message has been sent to the admin. They can reply directly using the button.")
         except Exception as e:
@@ -391,18 +387,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_info = pending_messages.get(user_id, ("Unknown User", "N/A"))
         full_name, username = user_info
         
-        # Escape Markdown characters to prevent parsing errors
-        escaped_full_name = escape_markdown(full_name)
-        escaped_username = escape_markdown(username)
-        
         # Update the original message to show it's being handled (without Markdown)
         original_text = query.message.text
-        # Remove Markdown formatting from original text if it exists
-        clean_original_text = re.sub(r'[*_`\[\]()~>#+\-=|{}.!]', '', original_text)
         
         try:
             await query.edit_message_text(
-                f"{clean_original_text}\n\n✅ Reply initiated to {full_name}",
+                f"{original_text}\n\n✅ Reply initiated to {full_name}",
                 reply_markup=None  # Remove the button after clicking
             )
         except Exception as e:
@@ -410,7 +400,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # If editing fails, just send a new message
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
-                text=f"Original message: {clean_original_text}\n\n✅ Reply initiated to {full_name}"
+                text=f"Original message: {original_text}\n\n✅ Reply initiated to {full_name}"
             )
         
         # Send instructions in a new message
