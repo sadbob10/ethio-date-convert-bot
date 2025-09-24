@@ -243,6 +243,117 @@ async def process_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
+    # Cancel
+    if text.lower() in ["cancel", "/cancel"]:
+        await cancel(update, context)
+        return
+
+    # Convert Date
+    if text.lower() in ["convert date", "convert"]:
+        context.user_data["awaiting_date"] = "convert"
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("Gregorian", callback_data="input-greg"),
+                InlineKeyboardButton("Ethiopian", callback_data="input-eth"),
+                InlineKeyboardButton("Hijri", callback_data="input-hijri"),
+            ]]
+        )
+        await update.message.reply_text("Select input calendar type:", reply_markup=keyboard)
+        return
+
+    # Calculate Age
+    if text.lower() in ["calculate age", "age"]:
+        context.user_data["awaiting_date"] = "age"
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton("Gregorian", callback_data="input-greg"),
+                InlineKeyboardButton("Ethiopian", callback_data="input-eth"),
+                InlineKeyboardButton("Hijri", callback_data="input-hijri"),
+            ]]
+        )
+        await update.message.reply_text("Select your birthdate calendar type:", reply_markup=keyboard)
+        return
+
+    # Write a message to admin
+    if text.lower() in ["write a message", "message"]:
+        if not ADMIN_CHAT_ID:
+            await update.message.reply_text("⚠️ Admin chat is not configured. Cannot send messages.")
+            return
+        context.user_data["awaiting_date"] = "message"
+        await update.message.reply_text(
+            "✏️ Please type your message and it will be sent to the admin.\nType /cancel to cancel."
+        )
+        return
+
+    # User is sending message to admin
+    if context.user_data.get("awaiting_date") == "message":
+        try:
+            sanitized_msg = sanitize_message(text)
+            user_id = update.effective_user.id
+            full_name = update.effective_user.full_name
+            username = update.effective_user.username or "N/A"
+            pending_messages[user_id] = (full_name, username)
+
+            reply_markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Reply to User", callback_data=f"reply-{user_id}")]]
+            )
+            reply_text = f"📨 Message from {full_name} (@{username}):\n\n{sanitized_msg}"
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=reply_text, reply_markup=reply_markup)
+            await update.message.reply_text(
+                "✅ Your message has been sent to the admin. They can reply directly using the button."
+            )
+        except Exception as e:
+            logger.exception(f"Error forwarding message from user {update.effective_user.id}")
+            await update.message.reply_text(f"⚠️ Failed to send your message: {str(e)}")
+        finally:
+            context.user_data["awaiting_date"] = None
+        return
+
+    # Admin is replying to a user
+    if context.user_data.get("awaiting_date") == "admin_reply":
+        try:
+            target_user_id = context.user_data.get("reply_to_user")
+            if not target_user_id:
+                await update.message.reply_text("⚠️ No user selected for reply.")
+                return
+
+            reply_msg = sanitize_message(text)
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"📩 Reply from Admin:\n\n{reply_msg}"
+            )
+            await update.message.reply_text("✅ Reply sent to the user.")
+        except Exception as e:
+            logger.exception("Error sending admin reply")
+            await update.message.reply_text(f"⚠️ Failed to send reply: {str(e)}")
+        finally:
+            context.user_data["awaiting_date"] = None
+            context.user_data["reply_to_user"] = None
+        return
+
+    # Date processing (convert/age)
+    if context.user_data.get("awaiting_date"):
+        await process_date(update, context)
+        return
+
+    # Menu
+    if text.lower() in ["menu", "/menu"]:
+        await menu(update, context)
+        return
+
+    # Help
+    if text.lower() in ["help", "/help"]:
+        await help_command(update, context)
+        return
+
+    # Fallback
+    await update.message.reply_text(
+        "⚠️ Command not recognized. Use /help.",
+        reply_markup=GLOBAL_KEYBOARD,
+    )
+
+    text = update.message.text.strip()
+
     if text.lower() in ["cancel", "/cancel"]:
         await cancel(update, context)
         return
